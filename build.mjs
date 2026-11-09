@@ -14,7 +14,7 @@ const SKIN = process.env.VTF_SKIN ?? "/skin-skin69"; // vtf_data.html 이 있는
 const OUT = process.env.OUT_DIR || "out";
 const PAGES = process.env.PAGES_URL || "https://coolky86-bit.github.io/vtfilter";
 const TOPS = (process.env.VTF_TOPS || "2459,2460,1835,2422,2421,2140,2175,2141,2134").split(",");
-const FULL_EVERY_H = 24, NEW_LIMIT = 400;
+const FULL_EVERY_H = 24, NEW_LIMIT = 150; // 새 상품은 한 번에 150개까지만 물어봄(약 2.5분), 나머지는 다음 실행
 const UA = { "user-agent": "vtfilter-index/2.0 (+https://github.com/coolky86-bit/vtfilter)" };
 const log = (...a) => {
   const line = [new Date().toISOString().slice(11, 19), ...a.map((x) => (typeof x === "string" ? x : JSON.stringify(x)))].join(" ");
@@ -119,14 +119,7 @@ if (full) {
   }
   await Promise.all(Array.from({ length: 2 }, leafWorker));
   log("소분류 소속", Object.keys(member).length, "못 읽음", failed);
-  for (let since = 0; ; ) {
-    const j = await api(`/products?limit=100&since_product_no=${since}&display=T&selling=T&fields=product_no,product_tag`);
-    if (!j || !j.products.length) break;
-    for (const p of j.products) if (p.product_tag && p.product_tag.length) tags[p.product_no] = p.product_tag.join(",");
-    since = j.products[j.products.length - 1].product_no;
-    if (j.products.length < 100) break;
-  }
-  log("태그", Object.keys(tags).length, "API", calls);
+  if (prev && prev.tags) tags = prev.tags; // 태그는 아래에서 이어 받기 (한 번에 다 받으면 너무 오래 걸림)
   tFull = new Date().toISOString();
 } else {
   cats = prev.cats; member = prev.member; tags = prev.tags; tFull = prev.t_full;
@@ -141,6 +134,21 @@ if (full) {
     for (const c of p.category || []) { const k = c.category_no; if (!member[k]) member[k] = []; if (!member[k].includes(n)) member[k].unshift(n); leafSet.add(k); }
   }
   log("새 상품", fresh.length, "API", calls);
+}
+
+// 태그 이어 받기: 실행마다 정해진 시간만(전체 8분·빠른 3분) 받고, 어디까지 받았는지(tag_since) 저장해 다음 실행이 이어 받음
+let tagSince = prev && prev.tag_since ? prev.tag_since : 0, tagPass = prev && prev.tag_pass ? prev.tag_pass : null;
+{
+  const until = Date.now() + (full ? 8 : 3) * 60e3;
+  let got = 0;
+  while (Date.now() < until) {
+    const j = await api(`/products?limit=100&since_product_no=${tagSince}&display=T&selling=T&fields=product_no,product_tag`);
+    if (!j || !j.products.length) { tagSince = 0; tagPass = new Date().toISOString(); break; }
+    for (const p of j.products) { got++; if (p.product_tag && p.product_tag.length) tags[p.product_no] = p.product_tag.join(","); }
+    tagSince = j.products[j.products.length - 1].product_no;
+    if (j.products.length < 100) { tagSince = 0; tagPass = new Date().toISOString(); break; }
+  }
+  log("태그 받음", got, "다음 시작", tagSince, "API", calls);
 }
 
 // 위 분류 = 자기 자신 + 아래 분류 합. 순서 = 대분류 자료 파일 순서(신상품 순)
@@ -170,8 +178,8 @@ for (const no of new Set([...cats.map((c) => String(c.category_no)), ...TOPS])) 
 // 다음 실행이 쓸 상태 (안 쓰는 상품 태그는 정리)
 const live = new Set(master.keys());
 for (const k of Object.keys(tags)) if (!live.has(+k)) delete tags[k];
-await fs.writeFile(`${OUT}/state.json`, JSON.stringify({ v2: 1, t: stamp, t_full: tFull, cats, member, tags, known: [...live] }));
-const status = { t: stamp, mode: full ? "전체" : "빠른", t_full: tFull, products: master.size, tags: Object.keys(tags).length, files, mb: +(bytes / 1048576).toFixed(1), api_calls: calls, seconds: Math.round((Date.now() - t0) / 1000) };
+await fs.writeFile(`${OUT}/state.json`, JSON.stringify({ v2: 1, t: stamp, t_full: tFull, tag_since: tagSince, tag_pass: tagPass, cats, member, tags, known: [...live] }));
+const status = { t: stamp, mode: full ? "전체" : "빠른", t_full: tFull, tag_since: tagSince, tag_pass: tagPass, products: master.size, tags: Object.keys(tags).length, files, mb: +(bytes / 1048576).toFixed(1), api_calls: calls, seconds: Math.round((Date.now() - t0) / 1000) };
 await fs.writeFile(`${OUT}/status.json`, JSON.stringify(status));
 await fs.writeFile(`${OUT}/index.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>빈티지톡 상품필터 자료 (${stamp}, ${status.mode} 실행) — <a href="status.json">status.json</a></p>`);
 await fs.writeFile(`${OUT}/callback.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>앱 설치가 끝났습니다. 이 창을 닫으셔도 됩니다.</p>`);
