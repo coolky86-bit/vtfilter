@@ -158,9 +158,12 @@ function collect(no, depth = 0) {
   no = String(no);
   if (order[no]) return order[no];
   if (depth > 8) return [];
+  // 소분류(아래 분류 없음) = 그 분류 자료 파일 순서 그대로(쇼핑몰 목록과 같은 순서)
+  if (!(kids[+no] || []).length) return (member[no] || []).filter((n) => master.has(n));
+  // 중간 분류 = 아래 분류를 합쳐 최신 상품 먼저(상품 번호 큰 순)
   const set = new Set(member[no] || []);
   for (const k of kids[+no] || []) for (const n of collect(k, depth + 1)) set.add(n);
-  return [...set].filter((n) => master.has(n)).sort((a, b) => (rank.get(a) ?? 1e9) - (rank.get(b) ?? 1e9));
+  return [...set].filter((n) => master.has(n)).sort((a, b) => b - a);
 }
 
 // 파일: [번호, 이름, 브랜드, 판매가, 할인가, 품절, 사진파일, 실측, 태그]
