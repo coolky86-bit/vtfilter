@@ -90,30 +90,42 @@ try { const r = await fetch(`${PAGES}/state.json?t=${Date.now()}`, { headers: UA
 const full = !prev || !prev.v2 || process.env.FULL === "1" || Date.now() - Date.parse(prev.t_full || 0) > FULL_EVERY_H * 3600e3;
 log(full ? "전체 실행" : "빠른 실행", prev ? "이전 " + prev.t : "이전 없음");
 
+// 분류 목록: 전체 실행이면 카페24 앱으로 새로, 아니면 지난 결과 그대로
+let cats, member = {}, tags = {}, tFull;
+if (full || !prev.cats || !prev.cats.length || prev.cats[0].use_display === undefined) {
+  cats = [];
+  for (let off = 0; ; off += 100) { const j = await api(`/categories?limit=100&offset=${off}`); cats.push(...j.categories.map((c) => ({ category_no: c.category_no, parent_category_no: c.parent_category_no, use_display: c.use_display }))); if (j.categories.length < 100) break; }
+} else cats = prev.cats;
+// 손님에게 보이는 분류만 (자기와 위 분류가 모두 '표시') — 미분류삭제·오염 같은 숨김 분류는 뺌
+const byNo = new Map(cats.map((c) => [c.category_no, c]));
+const visible = new Set();
+for (const c of cats) { let x = c, ok = true, d = 0; while (x && d++ < 10) { if (x.use_display === "F") { ok = false; break; } if (x.parent_category_no === 1) break; x = byNo.get(x.parent_category_no); } if (ok && x) visible.add(c.category_no); }
+const ROOTS = cats.filter((c) => c.parent_category_no === 1 && visible.has(c.category_no)).map((c) => String(c.category_no));
+const TOP_LIST = ROOTS.length ? ROOTS : TOPS;
+
+// 맨 위 분류(대분류 + MD추천·폴로·브랜드 등)는 실행마다 전부 새로 읽음: 이름·가격·할인가·실측·품절·사진
 const master = new Map();
 const order = {};
-for (const c of TOPS) {
+for (const c of TOP_LIST) {
   const list = await crawlTop(c);
+  if (!list.length) continue;
   order[c] = list.map((it) => it.n);
   for (const it of list) if (!master.has(it.n)) master.set(it.n, it);
   log("자료파일", c, list.length, "누적", master.size);
 }
 if (master.size < 1000) throw new Error("상품이 너무 적음(" + master.size + ") — 쇼핑몰 응답 이상, 올리지 않음");
 
-let cats, member = {}, tags = {}, tFull;
 if (full) {
-  cats = [];
-  for (let off = 0; ; off += 100) { const j = await api(`/categories?limit=100&offset=${off}`); cats.push(...j.categories.map((c) => ({ category_no: c.category_no, parent_category_no: c.parent_category_no }))); if (j.categories.length < 100) break; }
   const hasKid = new Set(cats.map((c) => c.parent_category_no));
-  // 소분류 소속은 카페24 앱(1초에 1번, 30분 넘게 걸림) 대신 쇼핑몰 자료 파일로 분류마다 읽음 → 2~3분
-  const leaves = cats.filter((c) => !hasKid.has(c.category_no) && !TOPS.includes(String(c.category_no)));
+  // 소분류 소속은 카페24 앱(1초에 1번, 30분 넘게 걸림) 대신 쇼핑몰 자료 파일로 분류마다 읽음
+  const leaves = cats.filter((c) => visible.has(c.category_no) && !hasKid.has(c.category_no) && !TOP_LIST.includes(String(c.category_no)));
   let li = 0, failed = 0;
   async function leafWorker() {
     while (li < leaves.length) {
       const c = leaves[li++];
       try {
         const list = await crawlTop(c.category_no);
-        if (list.length) { member[c.category_no] = list.map((it) => it.n); for (const it of list) if (!master.has(it.n)) master.set(it.n, it); }
+        if (list.length) member[c.category_no] = list.map((it) => it.n);
       } catch (e) { failed++; log("소분류 못 읽음", c.category_no); }
     }
   }
@@ -122,7 +134,7 @@ if (full) {
   if (prev && prev.tags) tags = prev.tags; // 태그는 아래에서 이어 받기 (한 번에 다 받으면 너무 오래 걸림)
   tFull = new Date().toISOString();
 } else {
-  cats = prev.cats; member = prev.member; tags = prev.tags; tFull = prev.t_full;
+  member = prev.member; tags = prev.tags; tFull = prev.t_full;
   // 새로 올라온 상품만 소분류·태그 물어보기
   const known = new Set(prev.known || []);
   const fresh = [...master.keys()].filter((n) => !known.has(n)).slice(0, NEW_LIMIT);
@@ -153,7 +165,6 @@ let tagSince = prev && prev.tag_since ? prev.tag_since : 0, tagPass = prev && pr
 
 // 위 분류 = 자기 자신 + 아래 분류 합. 순서 = 대분류 자료 파일 순서(신상품 순)
 const kids = {}; for (const c of cats) (kids[c.parent_category_no] = kids[c.parent_category_no] || []).push(c.category_no);
-const rank = new Map(); { let r = 0; for (const c of TOPS) for (const n of order[c] || []) if (!rank.has(n)) rank.set(n, r++); }
 function collect(no, depth = 0) {
   no = String(no);
   if (order[no]) return order[no];
@@ -168,11 +179,30 @@ function collect(no, depth = 0) {
 
 // 파일: [번호, 이름, 브랜드, 판매가, 할인가, 품절, 사진파일, 실측, 태그]
 const IMG = "/web/product/medium/";
-const row = (n) => { const m = master.get(n); if (!m) return null; const img = m.i.includes(IMG) ? m.i.slice(m.i.indexOf(IMG) + IMG.length) : m.i; return [n, m.t, m.b, m.p, m.s || 0, m.x ? 1 : 0, img, m.m, tags[n] || ""]; };
+// 태그는 필터에 도움 되는 낱말만: 상품명·브랜드에 이미 있는 말, 상품코드(쿨25123 등), '빈티지톡'은 뺌 → 파일이 작아짐
+const tagCache = new Map();
+function slimTags(n, m) {
+  const raw = tags[n]; if (!raw) return "";
+  const hay = (m.t + " " + m.b).toLowerCase();
+  const out = [];
+  for (let w of raw.split(",")) {
+    w = w.trim(); if (!w) continue;
+    const lw = w.toLowerCase();
+    if (lw === "빈티지톡" || /\d{4,}/.test(w) || lw === m.b.toLowerCase() || hay.includes(lw)) continue;
+    if (!out.includes(w)) out.push(w);
+  }
+  return out.join(",");
+}
+const row = (n) => {
+  const m = master.get(n); if (!m) return null;
+  let tg = tagCache.get(n); if (tg === undefined) { tg = slimTags(n, m); tagCache.set(n, tg); }
+  const img = m.i.includes(IMG) ? m.i.slice(m.i.indexOf(IMG) + IMG.length) : m.i;
+  return [n, m.t, m.b, m.p, m.s || 0, m.x ? 1 : 0, img, m.m, tg];
+};
 await fs.mkdir(`${OUT}/c`, { recursive: true });
 const stamp = new Date().toISOString();
 let files = 0, bytes = 0;
-for (const no of new Set([...cats.map((c) => String(c.category_no)), ...TOPS])) {
+for (const no of new Set([...cats.filter((c) => visible.has(c.category_no)).map((c) => String(c.category_no)), ...TOP_LIST])) {
   const items = collect(no).map(row).filter(Boolean);
   if (!items.length) continue;
   const body = JSON.stringify({ v: 1, t: stamp, c: +no, total: items.length, img: SITE + IMG, items });
