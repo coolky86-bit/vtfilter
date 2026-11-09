@@ -1,7 +1,7 @@
 // 빈티지톡 상품필터 — 분류별 상품 목록 파일 만들기 (GitHub Actions, 15분마다)
 // 빠른 실행(보통): 쇼핑몰 자료 파일(vtf_data.html)로 대분류 상품 전체(이름·브랜드·가격·할인가·실측·품절·사진)를 새로 읽고,
 //   새로 올라온 상품만 카페24 앱(Front API)으로 소분류·태그를 물어봄 → 2~3분
-// 전체 실행(하루 1번 또는 처음): 카페24 앱으로 모든 소분류 소속과 태그를 다시 받음 → 15~20분
+// 전체 실행(하루 1번 또는 처음): 소분류마다 자료 파일을 읽어 소속을 다시 만들고(2~3분), 카페24 앱으로 태그 전체를 다시 받음(약 10분)
 // 이전 결과(state.json)는 GitHub Pages에 같이 올려 두고 다음 실행이 받아 씀.
 // 비밀값 없음: 앱 번호(Client ID)만 씀. 앱 권한 = 상품·상품분류 읽기.
 import fs from "node:fs/promises";
@@ -105,17 +105,20 @@ if (full) {
   cats = [];
   for (let off = 0; ; off += 100) { const j = await api(`/categories?limit=100&offset=${off}`); cats.push(...j.categories.map((c) => ({ category_no: c.category_no, parent_category_no: c.parent_category_no }))); if (j.categories.length < 100) break; }
   const hasKid = new Set(cats.map((c) => c.parent_category_no));
-  for (const c of cats.filter((c) => !hasKid.has(c.category_no) && !TOPS.includes(String(c.category_no)))) {
-    const ids = [];
-    for (let off = 0; off < 8000; off += 100) {
-      const j = await api(`/categories/${c.category_no}/products?display_group=1&limit=100&offset=${off}`);
-      if (!j) break;
-      for (const p of j.products) ids.push(p.product_no);
-      if (j.products.length < 100) break;
+  // 소분류 소속은 카페24 앱(1초에 1번, 30분 넘게 걸림) 대신 쇼핑몰 자료 파일로 분류마다 읽음 → 2~3분
+  const leaves = cats.filter((c) => !hasKid.has(c.category_no) && !TOPS.includes(String(c.category_no)));
+  let li = 0, failed = 0;
+  async function leafWorker() {
+    while (li < leaves.length) {
+      const c = leaves[li++];
+      try {
+        const list = await crawlTop(c.category_no);
+        if (list.length) { member[c.category_no] = list.map((it) => it.n); for (const it of list) if (!master.has(it.n)) master.set(it.n, it); }
+      } catch (e) { failed++; log("소분류 못 읽음", c.category_no); }
     }
-    if (ids.length) member[c.category_no] = ids;
   }
-  log("소분류 소속", Object.keys(member).length, "API", calls);
+  await Promise.all(Array.from({ length: 2 }, leafWorker));
+  log("소분류 소속", Object.keys(member).length, "못 읽음", failed);
   for (let since = 0; ; ) {
     const j = await api(`/products?limit=100&since_product_no=${since}&display=T&selling=T&fields=product_no,product_tag`);
     if (!j || !j.products.length) break;
