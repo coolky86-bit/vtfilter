@@ -1,12 +1,17 @@
-# 빈티지톡 상품필터: 1시간마다 분류별 상품 목록 파일을 만들어 GitHub Pages에 올립니다.
-# 비밀값 없음 (카페24 앱 번호만 씀, 앱 권한 = 상품·상품분류 읽기)
+# 빈티지톡 상품필터: 15분마다 분류별 상품 목록 파일을 만들어 GitHub Pages에 올립니다.
+# 보통은 2~3분(바뀐 것만), 하루 1번은 전체 다시 받기(15~20분). 비밀값 없음.
 name: build-index
 on:
   schedule:
-    - cron: "7 * * * *"   # 매시 7분 (한국 시간도 매시 7분)
-  workflow_dispatch: {}    # Actions 화면에서 [Run workflow]로 바로 실행
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "전체 다시 받기 (1)"
+        required: false
+        default: "0"
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 concurrency:
@@ -22,12 +27,24 @@ jobs:
         with:
           node-version: "20"
       - name: 목록 파일 만들기
+        id: build
         run: node build.mjs
         env:
           OUT_DIR: out
+          FULL: ${{ github.event.inputs.full }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
       - id: deployment
         uses: actions/deploy-pages@v4
+      # GitHub는 저장소에 60일 동안 변화가 없으면 자동 실행을 멈춥니다 → 전체 실행 때(하루 1번) 기록 한 줄을 남겨 계속 돌게 함
+      - name: 계속 돌게 기록 남기기
+        if: steps.build.outputs.full == '1'
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > last_full.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last_full.txt
+          git commit -m "전체 실행 기록" || exit 0
+          git push
