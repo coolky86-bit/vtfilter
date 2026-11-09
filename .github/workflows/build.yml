@@ -1,0 +1,33 @@
+# 빈티지톡 상품필터: 1시간마다 분류별 상품 목록 파일을 만들어 GitHub Pages에 올립니다.
+# 비밀값 없음 (카페24 앱 번호만 씀, 앱 권한 = 상품·상품분류 읽기)
+name: build-index
+on:
+  schedule:
+    - cron: "7 * * * *"   # 매시 7분 (한국 시간도 매시 7분)
+  workflow_dispatch: {}    # Actions 화면에서 [Run workflow]로 바로 실행
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: 목록 파일 만들기
+        run: node build.mjs
+        env:
+          OUT_DIR: out
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+      - id: deployment
+        uses: actions/deploy-pages@v4
