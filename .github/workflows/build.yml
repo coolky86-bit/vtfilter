@@ -1,5 +1,7 @@
 # 빈티지톡 상품필터: 15분마다 분류별 상품 목록 파일을 만들어 GitHub Pages에 올립니다.
 # 보통은 2~3분(바뀐 것만), 하루 1번은 전체 다시 받기(약 15분). 비밀값 없음.
+# 11/23: 플러스(plus/)·오케이(ok/)도 같은 실행에서 만듦 — 사이트는 통째로 올라가서 세 가게를 한 번에 만들어야 서로 안 지워짐.
+#        플러스·오케이가 실패해도 톡은 올라가게(continue-on-error). 둘은 '빈티지 쇼핑몰 자동화' 앱 번호로 분류를 읽고 태그는 안 받음.
 name: build-index
 on:
   schedule:
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +33,28 @@ jobs:
         run: node build.mjs
         env:
           OUT_DIR: out
+          FULL: ${{ github.event.inputs.full }}
+      - name: 플러스 목록 파일 만들기
+        continue-on-error: true
+        timeout-minutes: 15
+        run: node build.mjs
+        env:
+          OUT_DIR: out
+          SUB: plus
+          MALL: k2sun2000
+          CAFE24_CLIENT_ID: uWRetGTjWq9Kz3aMNa32ZE
+          TAGS: "0"
+          FULL: ${{ github.event.inputs.full }}
+      - name: 오케이 목록 파일 만들기
+        continue-on-error: true
+        timeout-minutes: 15
+        run: node build.mjs
+        env:
+          OUT_DIR: out
+          SUB: ok
+          MALL: korshin7
+          CAFE24_CLIENT_ID: uWRetGTjWq9Kz3aMNa32ZE
+          TAGS: "0"
           FULL: ${{ github.event.inputs.full }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
