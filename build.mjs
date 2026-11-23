@@ -6,16 +6,22 @@
 // 비밀값 없음: 앱 번호(Client ID)만 씀. 앱 권한 = 상품·상품분류 읽기.
 import fs from "node:fs/promises";
 
-const MALL = "oldmarket";
+// 11/23: 한 번 실행에 가게 하나. 워크플로가 톡(기본, 결과는 맨 위 c/) → 플러스(SUB=plus) → 오케이(SUB=ok) 순서로 세 번 부름
+//   플러스·오케이는 '빈티지 쇼핑몰 자동화' 앱 번호(세 몰에 설치됨, Front API 는 앱 번호만 씀)로 분류를 읽고, 태그는 안 받음(TAGS=0)
+const MALL = process.env.MALL || "oldmarket";
+const SUB = (process.env.SUB || "").replace(/[^a-z]/g, "");   // "" = 톡(맨 위), "plus", "ok"
 const CID = process.env.CAFE24_CLIENT_ID || "Jx8qsVH5ChOjryWdkLC64A";
 const API = `https://${MALL}.cafe24api.com/api/v2`;
-const SITE = `https://${MALL}.cafe24.com`;
+const SITE = process.env.SITE_URL || `https://${MALL}.cafe24.com`;
 const SKIN = process.env.VTF_SKIN ?? ""; // vtf_data.html 이 있는 디자인. 11/09 밤 대표(스킨64)에 넣어서 "" (복사본이면 "/skin-skin69")
-const OUT = process.env.OUT_DIR || "out";
-const PAGES = process.env.PAGES_URL || "https://coolky86-bit.github.io/vtfilter";
-const TOPS = (process.env.VTF_TOPS || "2459,2460,1835,2422,2421,2140,2175,2141,2134").split(",");
+const OUT_ROOT = process.env.OUT_DIR || "out";
+const OUT = SUB ? `${OUT_ROOT}/${SUB}` : OUT_ROOT;
+const PAGES_ROOT = process.env.PAGES_URL || "https://coolky86-bit.github.io/vtfilter";
+const PAGES = SUB ? `${PAGES_ROOT}/${SUB}` : PAGES_ROOT;
+const TAGS = process.env.TAGS !== "0";
+const TOPS = SUB ? [] : (process.env.VTF_TOPS || "2459,2460,1835,2422,2421,2140,2175,2141,2134").split(",");
 const FULL_EVERY_H = 24, NEW_LIMIT = 150; // 새 상품은 한 번에 150개까지만 물어봄(약 2.5분), 나머지는 다음 실행
-const UA = { "user-agent": "vtfilter-index/2.0 (+https://github.com/coolky86-bit/vtfilter)" };
+const UA = { "user-agent": "vtfilter-index/2.1 (+https://github.com/coolky86-bit/vtfilter)" };
 const log = (...a) => {
   const line = [new Date().toISOString().slice(11, 19), ...a.map((x) => (typeof x === "string" ? x : JSON.stringify(x)))].join(" ");
   console.log(line);
@@ -85,6 +91,7 @@ async function crawlTop(cate) {
 
 /* ---------- 실행 ---------- */
 const t0 = Date.now();
+log("가게", MALL, SUB || "(톡, 맨 위)", "태그", TAGS ? "받음" : "안 받음");
 let prev = null;
 try { const r = await fetch(`${PAGES}/state.json?t=${Date.now()}`, { headers: UA }); if (r.ok) prev = await r.json(); } catch (e) {}
 const full = !prev || !prev.v2 || process.env.FULL === "1" || Date.now() - Date.parse(prev.t_full || 0) > FULL_EVERY_H * 3600e3;
@@ -102,6 +109,7 @@ const visible = new Set();
 for (const c of cats) { let x = c, ok = true, d = 0; while (x && d++ < 10) { if (x.use_display === "F") { ok = false; break; } if (x.parent_category_no === 1) break; x = byNo.get(x.parent_category_no); } if (ok && x) visible.add(c.category_no); }
 const ROOTS = cats.filter((c) => c.parent_category_no === 1 && visible.has(c.category_no)).map((c) => String(c.category_no));
 const TOP_LIST = ROOTS.length ? ROOTS : TOPS;
+if (!TOP_LIST.length) throw new Error("맨 위 분류를 못 찾음 — 올리지 않음");
 
 // 맨 위 분류(대분류 + MD추천·폴로·브랜드 등)는 실행마다 전부 새로 읽음: 이름·가격·할인가·실측·품절·사진
 const master = new Map();
@@ -140,9 +148,9 @@ if (full) {
   const fresh = [...master.keys()].filter((n) => !known.has(n)).slice(0, NEW_LIMIT);
   const leafSet = new Set(Object.keys(member).map(Number));
   for (const n of fresh) {
-    const j = await api(`/products/${n}?fields=product_no,category,product_tag`);
+    const j = await api(`/products/${n}?fields=product_no,category${TAGS ? ",product_tag" : ""}`);
     const p = j && j.product; if (!p) continue;
-    if (p.product_tag && p.product_tag.length) tags[n] = p.product_tag.join(",");
+    if (TAGS && p.product_tag && p.product_tag.length) tags[n] = p.product_tag.join(",");
     for (const c of p.category || []) { const k = c.category_no; if (!member[k]) member[k] = []; if (!member[k].includes(n)) member[k].unshift(n); leafSet.add(k); }
   }
   log("새 상품", fresh.length, "API", calls);
@@ -150,7 +158,7 @@ if (full) {
 
 // 태그 이어 받기: 실행마다 정해진 시간만(전체 8분·빠른 3분) 받고, 어디까지 받았는지(tag_since) 저장해 다음 실행이 이어 받음
 let tagSince = prev && prev.tag_since ? prev.tag_since : 0, tagPass = prev && prev.tag_pass ? prev.tag_pass : null;
-{
+if (TAGS) {
   const until = Date.now() + (full ? 8 : 3) * 60e3;
   let got = 0;
   while (Date.now() < until) {
@@ -212,10 +220,12 @@ for (const no of new Set([...cats.filter((c) => visible.has(c.category_no)).map(
 const live = new Set(master.keys());
 for (const k of Object.keys(tags)) if (!live.has(+k)) delete tags[k];
 await fs.writeFile(`${OUT}/state.json`, JSON.stringify({ v2: 1, t: stamp, t_full: tFull, tag_since: tagSince, tag_pass: tagPass, cats, member, tags, known: [...live] }));
-const status = { t: stamp, mode: full ? "전체" : "빠른", t_full: tFull, tag_since: tagSince, tag_pass: tagPass, products: master.size, tags: Object.keys(tags).length, files, mb: +(bytes / 1048576).toFixed(1), api_calls: calls, seconds: Math.round((Date.now() - t0) / 1000) };
+const status = { t: stamp, mall: MALL, mode: full ? "전체" : "빠른", t_full: tFull, tag_since: tagSince, tag_pass: tagPass, products: master.size, tags: Object.keys(tags).length, files, mb: +(bytes / 1048576).toFixed(1), api_calls: calls, seconds: Math.round((Date.now() - t0) / 1000) };
 await fs.writeFile(`${OUT}/status.json`, JSON.stringify(status));
-await fs.writeFile(`${OUT}/index.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>빈티지톡 상품필터 자료 (${stamp}, ${status.mode} 실행) — <a href="status.json">status.json</a></p>`);
-await fs.writeFile(`${OUT}/callback.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>앱 설치가 끝났습니다. 이 창을 닫으셔도 됩니다.</p>`);
-await fs.writeFile(`${OUT}/.nojekyll`, "");
-if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT, `full=${full ? 1 : 0}\n`);
+if (!SUB) {   // 사이트 맨 위 파일은 톡 실행 때만(플러스·오케이는 자기 폴더에 c/·state·status 만)
+  await fs.writeFile(`${OUT}/index.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>빈티지톡 상품필터 자료 (${stamp}, ${status.mode} 실행) — <a href="status.json">status.json</a> · 플러스 <a href="plus/status.json">status</a> · 오케이 <a href="ok/status.json">status</a></p>`);
+  await fs.writeFile(`${OUT}/callback.html`, `<!doctype html><meta charset=utf-8><title>빈티지톡 상품필터</title><p>앱 설치가 끝났습니다. 이 창을 닫으셔도 됩니다.</p>`);
+  await fs.writeFile(`${OUT}/.nojekyll`, "");
+  if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT, `full=${full ? 1 : 0}\n`);
+}
 log("끝", status);
